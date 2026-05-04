@@ -18,7 +18,7 @@ export async function normalizeItem(input: string): Promise<NormalizedItem> {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Normalize this shopping list item to help avoid duplicates. 
+      contents: `Normalize this shopping list item to help avoid duplicates.
       For example: '3 bags of frozen peas' -> Name: 'peas, frozen', Quantity: '3 bags'.
       Input: "${input}"
       
