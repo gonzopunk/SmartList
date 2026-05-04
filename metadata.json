@@ -1,0 +1,6 @@
+{
+  "name": "SmartList v1.3",
+  "description": "A lightweight, real-time shopping list with smart library, staples organization, and shared lists. (Updated v1.3)",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}

@@ -1,0 +1,107 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitive Definitions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(listId) {
+      return isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/lists/$(listId)).data.members;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Phase 4: Entity Validations
+    function isValidList(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'members', 'createdAt']) 
+        && data.keys().size() >= 4 && data.keys().size() <= 5
+        && data.name is string && data.name.size() <= 100
+        && data.ownerId is string
+        && data.members is list && data.members.size() >= 1 && data.members.size() <= 50
+        && (data.keys().hasAny(['pendingEmails']) ? (data.pendingEmails is list && data.pendingEmails.size() <= 50) : true)
+        && data.createdAt == request.time;
+    }
+
+    function isValidListItem(data) {
+      return data.keys().hasAll(['name', 'originalName', 'category', 'isStaple', 'isPurchased', 'quantity', 'addedBy', 'updatedAt'])
+        && data.keys().size() >= 8 && data.keys().size() <= 11
+        && data.name is string && data.name.size() <= 100
+        && data.originalName is string && data.originalName.size() <= 100
+        && data.category is string && data.category.size() <= 50
+        && data.quantity is string && data.quantity.size() <= 50
+        && data.isStaple is bool
+        && data.isPurchased is bool
+        && (data.keys().hasAny(['isInLibrary']) ? data.isInLibrary is bool : true)
+        && (data.keys().hasAny(['frequency']) ? data.frequency in ['staple', 'occasional', 'special'] : true)
+        && data.updatedAt == request.time;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['displayName', 'email', 'updatedAt'])
+        && data.keys().size() >= 3 && data.keys().size() <= 4
+        && data.displayName is string && data.displayName.size() <= 100
+        && data.email is string && data.email.size() <= 100
+        && data.updatedAt == request.time;
+    }
+
+    // Match Groups
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn(); // Allows searching by email
+      allow create, update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+    }
+
+    match /lists/{listId} {
+      allow get: if isSignedIn() && (request.auth.uid in resource.data.members || (resource.data.keys().hasAny(['pendingEmails']) && request.auth.token.email.lower() in resource.data.pendingEmails));
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.members || (resource.data.keys().hasAny(['pendingEmails']) && request.auth.token.email.lower() in resource.data.pendingEmails));
+      
+      allow create: if isSignedIn() && isValidId(listId) && isValidList(incoming()) && incoming().ownerId == request.auth.uid;
+      
+      allow update: if isSignedIn() && (
+        // Action: Update metadata or members (as member)
+        (request.auth.uid in resource.data.members && isValidList(incoming()) && 
+         incoming().ownerId == existing().ownerId && 
+         incoming().createdAt == existing().createdAt &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'members', 'pendingEmails'])) ||
+        // Action: Join list (self-add via link or email)
+        (isValidList(incoming()) &&
+         incoming().ownerId == existing().ownerId && 
+         incoming().createdAt == existing().createdAt &&
+         incoming().name == existing().name &&
+         incoming().members.size() == existing().members.size() + 1 &&
+         incoming().members.hasAll(existing().members) &&
+         incoming().members.hasAll([request.auth.uid]) &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['members', 'pendingEmails']))
+      );
+      
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      match /items/{itemId} {
+        allow read: if isMember(listId);
+        allow create: if isMember(listId) && isValidId(itemId) && isValidListItem(incoming()) && incoming().addedBy == request.auth.uid;
+        allow update: if isMember(listId) && isValidListItem(incoming()) && (
+          // Action: Toggle check/edit/library move
+          incoming().addedBy == existing().addedBy &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'originalName', 'category', 'isStaple', 'frequency', 'isPurchased', 'isInLibrary', 'quantity', 'updatedAt'])
+        );
+        allow delete: if isMember(listId);
+      }
+    }
+  }
+}

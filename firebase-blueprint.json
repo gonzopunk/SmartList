@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "List": {
+      "title": "Shopping List",
+      "description": "A shared shopping list container.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the list" },
+        "ownerId": { "type": "string", "description": "The user who created the list" },
+        "members": { "type": "array", "description": "List of user UIDs who have access" },
+        "pendingEmails": { "type": "array", "description": "Emails invited but not yet signed up" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerId", "members", "createdAt"]
+    },
+    "ListItem": {
+      "title": "Shopping List Item",
+      "description": "An item in a shopping list.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Normalized name for deduplication (e.g., 'peas, frozen')" },
+        "originalName": { "type": "string", "description": "Original name entered by user" },
+        "category": { "type": "string", "description": "Category like Produce, Dairy, etc." },
+        "isStaple": { "type": "boolean", "description": "True if this is a recurring pantry staple (Legacy)" },
+        "frequency": { "type": "string", "enum": ["staple", "occasional", "special"], "description": "The replenishment frequency of the item" },
+        "isPurchased": { "type": "boolean", "description": "True if item is currently in the cart" },
+        "isInLibrary": { "type": "boolean", "description": "True if item is tucked away in the library" },
+        "quantity": { "type": "string", "description": "Amount/unit" },
+        "addedBy": { "type": "string", "description": "User UID who added the item" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "originalName", "category", "isStaple", "isPurchased", "isInLibrary", "addedBy", "updatedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile for discovery.",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["displayName", "email", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Public user profiles"
+    },
+    "/lists/{listId}": {
+      "schema": "List",
+      "description": "Shared shopping lists"
+    },
+    "/lists/{listId}/items/{itemId}": {
+      "schema": "ListItem",
+      "description": "Items within a specific shopping list"
+    }
+  }
+}
