@@ -281,7 +281,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
   const [isListening, setIsListening] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
-  const [listMetadata, setListMetadata] = useState<{ ownerId: string; members: string[] } | null>(null);
+  const [listMetadata, setListMetadata] = useState<{ ownerId: string; members: string[]; pendingEmails: string[] } | null>(null);
   const [importText, setImportText] = useState("");
   const [isBulkImporting, setIsBulkImporting] = useState(false);
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
@@ -360,7 +360,11 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     const unsubscribeMetadata = onSnapshot(listRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        setListMetadata({ ownerId: data.ownerId, members: data.members });
+        setListMetadata({
+          ownerId: data.ownerId,
+          members: data.members ?? [],
+          pendingEmails: data.pendingEmails ?? [],
+        });
       }
     });
 
@@ -1052,6 +1056,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
             listId={listId}
             listName={listName}
             memberIds={listMetadata.members}
+            pendingEmails={listMetadata.pendingEmails}
             ownerId={listMetadata.ownerId}
             currentUser={user}
             onClose={() => setIsShareModalOpen(false)}

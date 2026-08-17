@@ -1,183 +1,248 @@
-import React, { useState, useEffect } from 'react';
-import { db } from '../lib/firebase';
-import { doc, updateDoc, collection, query, where, getDocs, getDoc } from 'firebase/firestore';
-import { X, Search, UserPlus, Shield, Trash2, Loader2, Link2, Check } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { X, UserPlus, Shield, Trash2, Loader2, Link2, Check, Mail } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { User } from 'firebase/auth';
+import {
+  addMemberByEmail,
+  describeMemberError,
+  fetchMemberProfiles,
+  initialFor,
+  isValidEmail,
+  removeMember,
+  revokeInvite,
+  type UserProfile,
+} from '../lib/members';
 
 interface ShareModalProps {
   listId: string;
   listName: string;
   memberIds: string[];
+  pendingEmails: string[];
   ownerId: string;
   currentUser: User;
   onClose: () => void;
 }
 
-interface UserProfile {
-  uid: string;
-  displayName: string;
-  email: string;
-  photoURL?: string;
-}
+type Feedback = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
-export function ShareModal({ listId, listName, memberIds, ownerId, currentUser, onClose }: ShareModalProps) {
-  const [searchEmail, setSearchEmail] = useState("");
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchResult, setSearchResult] = useState<UserProfile | null>(null);
-  const [searchError, setSearchError] = useState("");
+export function ShareModal({
+  listId,
+  listName,
+  memberIds,
+  pendingEmails,
+  ownerId,
+  currentUser,
+  onClose,
+}: ShareModalProps) {
+  const [emailInput, setEmailInput] = useState("");
+  const [isAdding, setIsAdding] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
   const [members, setMembers] = useState<UserProfile[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Depend on the contents, not the array identity, so a new snapshot with the
+  // same members doesn't refetch every profile.
+  const memberKey = memberIds.join('|');
+
   useEffect(() => {
-    const fetchMembers = async () => {
+    let cancelled = false;
+
+    const load = async () => {
       setLoadingMembers(true);
-      const profiles: UserProfile[] = [];
-      for (const uid of memberIds) {
-        const userDoc = await getDoc(doc(db, 'users', uid));
-        if (userDoc.exists()) {
-          profiles.push({ uid, ...userDoc.data() } as UserProfile);
-        } else {
-          profiles.push({ uid, displayName: 'Unknown User', email: '' });
-        }
+      const profiles = await fetchMemberProfiles(memberIds);
+      if (!cancelled) {
+        setMembers(profiles);
+        setLoadingMembers(false);
       }
-      setMembers(profiles);
-      setLoadingMembers(false);
     };
-    fetchMembers();
-  }, [memberIds]);
+    load();
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchEmail.trim()) return;
-    
-    setIsSearching(true);
-    setSearchError("");
-    setSearchResult(null);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberKey]);
 
-    try {
-      // Ensure we search for lowercase since users should be synced with lowercase emails
-      const emailToSearch = searchEmail.trim().toLowerCase();
-      const q = query(
-        collection(db, 'users'),
-        where('email', '==', emailToSearch)
-      );
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        setSearchError("No user found with this email.");
-      } else {
-        const userData = snapshot.docs[0].data();
-        const uid = snapshot.docs[0].id;
-        
-        if (memberIds.includes(uid)) {
-          setSearchError("User is already a member.");
-        } else {
-          setSearchResult({ uid, ...userData } as UserProfile);
-        }
-      }
-    } catch (err) {
-      console.error("Search failed:", err);
-      setSearchError("Searching failed. You can still invite them by link.");
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const inviteEmailAnyway = async () => {
-    if (!searchEmail) return;
-    try {
-      const listRef = doc(db, 'lists', listId);
-      const listSnap = await getDoc(listRef);
-      if (listSnap.exists()) {
-        const data = listSnap.data();
-        const pending = data.pendingEmails || [];
-        const email = searchEmail.trim().toLowerCase();
-        
-        if (!pending.includes(email)) {
-          await updateDoc(listRef, {
-            pendingEmails: [...pending, email]
-          });
-        }
-        setSearchEmail("");
-        setSearchResult(null);
-        setSearchError("Invitation sent! They'll be added when they sign in.");
-        setTimeout(() => setSearchError(""), 3000);
-      }
-    } catch (err) {
-      console.error("Invite anyway failed:", err);
-      setSearchError("Failed to add pending invite.");
-    }
-  };
-
-  const addMember = async (userId: string) => {
-    try {
-      const listRef = doc(db, 'lists', listId);
-      await updateDoc(listRef, {
-        members: [...memberIds, userId]
-      });
-      setSearchResult(null);
-      setSearchEmail("");
-    } catch (err) {
-      console.error("Add failed:", err);
-    }
-  };
-
-  const removeMember = async (userId: string) => {
-    if (userId === ownerId) return; // Cannot remove owner
-    try {
-      const listRef = doc(db, 'lists', listId);
-      await updateDoc(listRef, {
-        members: memberIds.filter(id => id !== userId)
-      });
-    } catch (err) {
-      console.error("Remove failed:", err);
-    }
-  };
-
-  const copyLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}?invite=${listId}`;
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
+  const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${listId}`;
   const isOwner = currentUser.uid === ownerId;
+  const canSubmit = isValidEmail(emailInput) && !isAdding;
+
+  const handleAdd = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!isValidEmail(emailInput)) {
+        setFeedback({ tone: 'error', text: 'Enter a valid email address.' });
+        return;
+      }
+
+      setIsAdding(true);
+      setFeedback(null);
+      try {
+        const result = await addMemberByEmail(listId, emailInput);
+        setEmailInput("");
+
+        switch (result.outcome) {
+          case 'added':
+            setFeedback({
+              tone: 'success',
+              text: `${result.profile?.displayName || result.email} was added to the list.`,
+            });
+            break;
+          case 'invited':
+            setFeedback({
+              tone: 'success',
+              text: `Invited ${result.email}. They'll join automatically when they sign in.`,
+            });
+            break;
+          case 'already-member':
+            setFeedback({ tone: 'info', text: 'That person is already a member.' });
+            break;
+          case 'already-invited':
+            setFeedback({ tone: 'info', text: 'That email already has a pending invite.' });
+            break;
+        }
+      } catch (err) {
+        console.error('Add member failed:', err);
+        setFeedback({ tone: 'error', text: describeMemberError(err) });
+      } finally {
+        setIsAdding(false);
+      }
+    },
+    [emailInput, listId]
+  );
+
+  const handleRemove = async (uid: string) => {
+    setBusyId(uid);
+    setFeedback(null);
+    try {
+      await removeMember(listId, uid);
+    } catch (err) {
+      console.error('Remove member failed:', err);
+      setFeedback({ tone: 'error', text: describeMemberError(err) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleRevoke = async (email: string) => {
+    setBusyId(email);
+    setFeedback(null);
+    try {
+      await revokeInvite(listId, email);
+    } catch (err) {
+      console.error('Revoke invite failed:', err);
+      setFeedback({ tone: 'error', text: describeMemberError(err) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Clipboard write failed:', err);
+      setFeedback({ tone: 'error', text: 'Could not copy — select the link and copy it manually.' });
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden"
+        className="bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
       >
-        <div className="p-6 border-b border-[var(--border-primary)] flex items-center justify-between">
+        <div className="p-6 border-b border-[var(--border-primary)] flex items-center justify-between shrink-0">
           <div>
             <h3 className="text-xl font-semibold text-[var(--text-primary)]">Invite Members</h3>
             <p className="text-xs text-[var(--text-secondary)]">Sharing "{listName}"</p>
           </div>
-          <button 
+          <button
             onClick={onClose}
             className="p-2 hover:bg-[var(--bg-secondary)] rounded-full transition-colors"
+            aria-label="Close"
           >
             <X className="w-5 h-5 text-[var(--text-secondary)]" />
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 overflow-y-auto">
+          {/* Add by email — one field, one button, no intermediate search step */}
+          <div className="space-y-2">
+            <label
+              htmlFor="invite-email"
+              className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest"
+            >
+              Add by Email
+            </label>
+            <form onSubmit={handleAdd} className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  id="invite-email"
+                  type="email"
+                  autoComplete="off"
+                  placeholder="friend@example.com"
+                  className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl text-sm text-[var(--text-primary)] focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  value={emailInput}
+                  onChange={(e) => {
+                    setEmailInput(e.target.value);
+                    setFeedback(null);
+                  }}
+                />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-secondary)]" />
+              </div>
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-bold active:scale-[0.98] transition-all disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {isAdding ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                Add
+              </button>
+            </form>
+            <p className="text-[10px] text-[var(--text-secondary)] px-1">
+              Already using SmartList? They're added right away. If not, we'll hold the invite until they sign in.
+            </p>
+
+            <AnimatePresence>
+              {feedback && (
+                <motion.p
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  role="status"
+                  className={cn(
+                    "text-[11px] font-semibold px-1 pt-1",
+                    feedback.tone === 'error' && "text-red-500",
+                    feedback.tone === 'success' && "text-green-600 dark:text-green-400",
+                    feedback.tone === 'info' && "text-[var(--text-secondary)]"
+                  )}
+                >
+                  {feedback.text}
+                </motion.p>
+              )}
+            </AnimatePresence>
+          </div>
+
           {/* Link Sharing */}
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">Share Link</label>
+            <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">
+              Or Share a Link
+            </label>
             <div className="flex items-center gap-2 p-1 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl">
               <div className="flex-1 px-3 py-2 text-xs text-[var(--text-secondary)] truncate font-mono">
-                {window.location.origin}/?invite={listId}
+                {inviteUrl}
               </div>
-              <button 
+              <button
                 onClick={copyLink}
                 className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all shrink-0",
                   copied ? "bg-green-500 text-white" : "bg-[var(--text-primary)] text-[var(--bg-primary)]"
                 )}
               >
@@ -185,82 +250,16 @@ export function ShareModal({ listId, listName, memberIds, ownerId, currentUser, 
                 {copied ? "Copied" : "Copy"}
               </button>
             </div>
-          </div>
-
-          {/* User Search */}
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">Invite by Email</label>
-            <form onSubmit={handleSearch} className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <input 
-                  type="email"
-                  placeholder="friend@example.com"
-                  className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl text-sm text-[var(--text-primary)] focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                  value={searchEmail}
-                  onChange={(e) => setSearchEmail(e.target.value)}
-                />
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-secondary)]" />
-              </div>
-              <button 
-                type="submit"
-                disabled={isSearching}
-                className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-bold active:scale-[0.98] transition-all disabled:opacity-50"
-              >
-                {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}
-              </button>
-            </form>
-
-            <AnimatePresence>
-              {searchError && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="space-y-2"
-                >
-                  <p className="text-[10px] text-red-500 font-bold px-1">
-                    {searchError}
-                  </p>
-                  {(searchError.includes("No user found") || searchError.includes("Searching failed")) && searchEmail && (
-                    <button
-                      onClick={inviteEmailAnyway}
-                      className="w-full py-2 px-3 bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-900/30 rounded-xl text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest hover:bg-indigo-100 dark:hover:bg-indigo-900/20 transition-all text-center"
-                    >
-                      Invite {searchEmail.split('@')[0]} anyway
-                    </button>
-                  )}
-                </motion.div>
-              )}
-
-              {searchResult && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="p-3 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900/30 rounded-xl flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                      {searchResult.displayName[0]}
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-[var(--text-primary)]">{searchResult.displayName}</p>
-                      <p className="text-[10px] text-[var(--text-secondary)]">{searchResult.email}</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => addMember(searchResult.uid)}
-                    className="p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                    title="Add to List"
-                  >
-                    <UserPlus className="w-4 h-4" />
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <p className="text-[10px] text-[var(--text-secondary)] px-1">
+              Anyone with this link can join the list. Share it only with people you trust.
+            </p>
           </div>
 
           {/* Member List */}
           <div className="space-y-3">
-            <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">Current Members</label>
+            <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">
+              Current Members ({memberIds.length})
+            </label>
             <div className="divide-y divide-[var(--border-primary)]">
               {loadingMembers ? (
                 <div className="py-8 flex justify-center">
@@ -269,25 +268,37 @@ export function ShareModal({ listId, listName, memberIds, ownerId, currentUser, 
               ) : (
                 members.map(member => (
                   <div key={member.uid} className="py-3 flex items-center justify-between group">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-primary)] flex items-center justify-center text-[var(--text-primary)] text-xs font-bold">
-                        {member.displayName[0]}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 shrink-0 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-primary)] flex items-center justify-center text-[var(--text-primary)] text-xs font-bold">
+                        {initialFor(member)}
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <p className="text-sm font-medium text-[var(--text-primary)]">{member.displayName}</p>
-                          {member.uid === ownerId && <Shield className="w-3 h-3 text-indigo-500" title="Owner" />}
+                          <p className="text-sm font-medium text-[var(--text-primary)] truncate">
+                            {member.displayName || member.email || 'Unknown User'}
+                          </p>
+                          {member.uid === ownerId && (
+                            <Shield className="w-3 h-3 shrink-0 text-indigo-500" title="Owner" />
+                          )}
+                          {member.uid === currentUser.uid && (
+                            <span className="text-[9px] font-bold text-[var(--text-secondary)] uppercase">You</span>
+                          )}
                         </div>
-                        <p className="text-[10px] text-[var(--text-secondary)]">{member.email}</p>
+                        <p className="text-[10px] text-[var(--text-secondary)] truncate">{member.email}</p>
                       </div>
                     </div>
                     {isOwner && member.uid !== ownerId && (
-                      <button 
-                        onClick={() => removeMember(member.uid)}
-                        className="p-2 text-[var(--text-secondary)] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                      <button
+                        onClick={() => handleRemove(member.uid)}
+                        disabled={busyId === member.uid}
+                        className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
                         title="Remove Member"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        {busyId === member.uid ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
                       </button>
                     )}
                   </div>
@@ -295,6 +306,42 @@ export function ShareModal({ listId, listName, memberIds, ownerId, currentUser, 
               )}
             </div>
           </div>
+
+          {/* Pending invites — visible so a typo is fixable */}
+          {pendingEmails.length > 0 && (
+            <div className="space-y-3">
+              <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">
+                Pending Invites ({pendingEmails.length})
+              </label>
+              <div className="divide-y divide-[var(--border-primary)]">
+                {pendingEmails.map(email => (
+                  <div key={email} className="py-3 flex items-center justify-between group">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 shrink-0 rounded-full bg-[var(--bg-secondary)] border border-dashed border-[var(--border-primary)] flex items-center justify-center">
+                        <Mail className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-[var(--text-primary)] truncate">{email}</p>
+                        <p className="text-[10px] text-[var(--text-secondary)]">Joins on next sign-in</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleRevoke(email)}
+                      disabled={busyId === email}
+                      className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
+                      title="Cancel Invite"
+                    >
+                      {busyId === email ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </motion.div>
     </div>

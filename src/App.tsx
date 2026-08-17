@@ -3,15 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { subscribeToAuth, loginWithGoogle, auth, db } from './lib/firebase';
 import { User } from 'firebase/auth';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, deleteDoc, updateDoc, setDoc, getDoc, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, deleteDoc, setDoc } from 'firebase/firestore';
 import { ShoppingList } from './types';
-import { Plus, List as ListIcon, LogOut, Loader2, ChevronRight, Share2, Trash2, Moon, Sun } from 'lucide-react';
+import { Plus, List as ListIcon, LogOut, Loader2, ChevronRight, Share2, Trash2, Moon, Sun, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ListView } from './components/ListView';
 import { cn } from './lib/utils';
+import { claimPendingInvites, describeMemberError, joinListById } from './lib/members';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -20,76 +21,69 @@ export default function App() {
   const [activeListId, setActiveListId] = useState<string | null>(null);
   const [isCreatingList, setIsCreatingList] = useState(false);
   const [newListLabel, setNewListLabel] = useState("");
-  const [isJoining, setIsJoining] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+
+  // Tracks which uid we've already run invite handling for. A ref, not state, so
+  // the effect can't re-enter itself or read a stale value from its closure.
+  const invitesHandledFor = useRef<string | null>(null);
 
   useEffect(() => {
-    const handleInvite = async () => {
-      if (!user) return;
-      
-      // 1. Process URL Invite Link first
-      const params = new URLSearchParams(window.location.search);
-      const inviteId = params.get('invite');
-      
-      if (inviteId && !isJoining) {
-        setIsJoining(true);
+    if (!user) {
+      invitesHandledFor.current = null;
+      return;
+    }
+    if (invitesHandledFor.current === user.uid) return;
+    invitesHandledFor.current = user.uid;
+
+    let cancelled = false;
+
+    const handleInvites = async () => {
+      // 1. Redeem an ?invite= link if one brought us here.
+      const inviteId = new URLSearchParams(window.location.search).get('invite');
+      if (inviteId) {
+        // Clear the param first so a failure or a reload can't re-trigger a prompt.
+        window.history.replaceState({}, '', window.location.pathname);
         try {
-          const listRef = doc(db, 'lists', inviteId);
-          const listSnap = await getDoc(listRef);
-          
-          if (listSnap.exists()) {
-            const data = listSnap.data();
-            const members = data.members || [];
-            const pending = data.pendingEmails || [];
-            const userEmail = user.email?.toLowerCase() || '';
-            
-            if (!members.includes(user.uid)) {
-              if (window.confirm(`Join shared list "${data.name}"?`)) {
-                await updateDoc(listRef, {
-                  members: [...members, user.uid],
-                  pendingEmails: pending.filter((e: string) => e !== userEmail)
-                });
-                setActiveListId(inviteId);
-              }
-            } else {
-              setActiveListId(inviteId);
-            }
+          const result = await joinListById(inviteId, user);
+          if (cancelled) return;
+          setActiveListId(inviteId);
+          if (result.status === 'joined') {
+            setNotice({
+              tone: 'success',
+              text: result.name ? `You joined "${result.name}".` : 'You joined the shared list.',
+            });
           }
-          window.history.replaceState({}, '', window.location.pathname);
         } catch (err) {
-          console.error("Invite processing failed:", err);
-        } finally {
-          setIsJoining(false);
+          console.error('Invite link failed:', err);
+          if (!cancelled) setNotice({ tone: 'error', text: describeMemberError(err) });
         }
       }
 
-      // 2. Automatic check for lists where this user's email was manually invited
-      const userEmail = user.email?.toLowerCase();
-      if (userEmail) {
-        try {
-          const q = query(
-            collection(db, 'lists'),
-            where('pendingEmails', 'array-contains', userEmail)
-          );
-          const snapshot = await getDocs(q);
-          for (const listDoc of snapshot.docs) {
-            const data = listDoc.data();
-            if (!data.members.includes(user.uid)) {
-              await updateDoc(listDoc.ref, {
-                members: [...data.members, user.uid],
-                pendingEmails: data.pendingEmails.filter((e: string) => e !== userEmail)
-              });
-              // Note: We don't force active list here to avoid interrupting the user
-            }
-          }
-        } catch (err) {
-          console.error("Pending invite cleanup failed:", err);
+      // 2. Claim any lists this email was invited to before signing up.
+      try {
+        const claimed = await claimPendingInvites(user);
+        if (claimed > 0 && !cancelled) {
+          setNotice({
+            tone: 'success',
+            text: `You were added to ${claimed} shared ${claimed === 1 ? 'list' : 'lists'}.`,
+          });
         }
+      } catch (err) {
+        console.error('Pending invite sweep failed:', err);
       }
     };
-    
-    const timer = setTimeout(handleInvite, 1000);
-    return () => clearTimeout(timer);
+
+    handleInvites();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [notice]);
   const [largeFont, setLargeFont] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('largeFont') === 'true';
@@ -445,6 +439,31 @@ export default function App() {
           </AnimatePresence>
         </div>
       </main>
+
+      {/* Invite / join feedback */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            role="status"
+            className={cn(
+              "fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 pl-5 pr-3 py-3 rounded-xl shadow-2xl text-sm font-medium max-w-[90vw]",
+              notice.tone === 'error' ? "bg-red-600 text-white" : "bg-gray-900 dark:bg-white text-white dark:text-gray-900"
+            )}
+          >
+            <span className="truncate">{notice.text}</span>
+            <button
+              onClick={() => setNotice(null)}
+              className="p-1 rounded-full opacity-60 hover:opacity-100 transition-opacity shrink-0"
+              aria-label="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

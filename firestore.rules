@@ -11,6 +11,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function authEmail() {
+      return isSignedIn() ? request.auth.token.get('email', '').lower() : '';
+    }
+
     function isMember(listId) {
       return isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/lists/$(listId)).data.members;
     }
@@ -27,15 +31,72 @@ service cloud.firestore {
       return resource.data;
     }
 
+    // pendingEmails is optional, so always read it through a default.
+    function incomingPending() {
+      return incoming().get('pendingEmails', []);
+    }
+
+    function existingPending() {
+      return existing().get('pendingEmails', []);
+    }
+
     // Phase 4: Entity Validations
-    function isValidList(data) {
-      return data.keys().hasAll(['name', 'ownerId', 'members', 'createdAt']) 
-        && data.keys().size() >= 4 && data.keys().size() <= 5
-        && data.name is string && data.name.size() <= 100
+
+    // Shape only. Deliberately says nothing about createdAt's *value* so it can
+    // be reused for updates, where createdAt is an existing past timestamp.
+    function isValidListShape(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'members', 'createdAt'])
+        && data.keys().hasOnly(['name', 'ownerId', 'members', 'createdAt', 'pendingEmails'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
         && data.ownerId is string
         && data.members is list && data.members.size() >= 1 && data.members.size() <= 50
-        && (data.keys().hasAny(['pendingEmails']) ? (data.pendingEmails is list && data.pendingEmails.size() <= 50) : true)
-        && data.createdAt == request.time;
+        && data.get('pendingEmails', []) is list && data.get('pendingEmails', []).size() <= 50
+        && data.createdAt is timestamp;
+    }
+
+    function isValidNewList(data) {
+      return isValidListShape(data)
+        && data.createdAt == request.time
+        && data.ownerId == request.auth.uid
+        && data.members == [request.auth.uid];
+    }
+
+    // Fields no update may ever touch.
+    function preservesListIdentity() {
+      return incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt;
+    }
+
+    function touchesOnlyMembershipKeys() {
+      return incoming().diff(existing()).affectedKeys().hasOnly(['name', 'members', 'pendingEmails']);
+    }
+
+    // Owner: full control over name and membership, but cannot orphan the list
+    // by removing themselves.
+    function isOwnerManagingList() {
+      return request.auth.uid == existing().ownerId
+        && touchesOnlyMembershipKeys()
+        && existing().ownerId in incoming().members;
+    }
+
+    // Non-owner member: may rename and invite, but never remove anyone.
+    function isMemberInviting() {
+      return request.auth.uid in existing().members
+        && touchesOnlyMembershipKeys()
+        && incoming().members.hasAll(existing().members);
+    }
+
+    // Anyone holding the list id (share link) or pre-invited by email may add
+    // exactly themselves, and may clear at most their own pending invite.
+    function isSelfJoining() {
+      return !(request.auth.uid in existing().members)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['members', 'pendingEmails'])
+        && incoming().members.hasAll(existing().members)
+        && incoming().members.size() == existing().members.size() + 1
+        && request.auth.uid in incoming().members
+        && existingPending().hasAll(incomingPending())
+        && incomingPending().size() >= existingPending().size() - 1
+        && !(authEmail() in incomingPending());
     }
 
     function isValidListItem(data) {
@@ -68,29 +129,26 @@ service cloud.firestore {
     }
 
     match /lists/{listId} {
-      allow get: if isSignedIn() && (request.auth.uid in resource.data.members || (resource.data.keys().hasAny(['pendingEmails']) && request.auth.token.email.lower() in resource.data.pendingEmails));
-      allow list: if isSignedIn() && (request.auth.uid in resource.data.members || (resource.data.keys().hasAny(['pendingEmails']) && request.auth.token.email.lower() in resource.data.pendingEmails));
-      
-      allow create: if isSignedIn() && isValidId(listId) && isValidList(incoming()) && incoming().ownerId == request.auth.uid;
-      
-      allow update: if isSignedIn() && (
-        // Action: Update metadata or members (as member)
-        (request.auth.uid in resource.data.members && isValidList(incoming()) && 
-         incoming().ownerId == existing().ownerId && 
-         incoming().createdAt == existing().createdAt &&
-         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'members', 'pendingEmails'])) ||
-        // Action: Join list (self-add via link or email)
-        (isValidList(incoming()) &&
-         incoming().ownerId == existing().ownerId && 
-         incoming().createdAt == existing().createdAt &&
-         incoming().name == existing().name &&
-         incoming().members.size() == existing().members.size() + 1 &&
-         incoming().members.hasAll(existing().members) &&
-         incoming().members.hasAll([request.auth.uid]) &&
-         incoming().diff(existing()).affectedKeys().hasOnly(['members', 'pendingEmails']))
-      );
-      
-      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      // Invariant: a list is only readable by its members, or by someone whose
+      // email is already on the pending invite list.
+      function canReadList() {
+        return isSignedIn() && (
+          request.auth.uid in existing().members ||
+          authEmail() in existingPending()
+        );
+      }
+
+      allow get: if canReadList();
+      allow list: if canReadList();
+
+      allow create: if isSignedIn() && isValidId(listId) && isValidNewList(incoming());
+
+      allow update: if isSignedIn()
+        && isValidListShape(incoming())
+        && preservesListIdentity()
+        && (isOwnerManagingList() || isMemberInviting() || isSelfJoining());
+
+      allow delete: if isSignedIn() && existing().ownerId == request.auth.uid;
 
       match /items/{itemId} {
         allow read: if isMember(listId);
