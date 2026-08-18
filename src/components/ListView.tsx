@@ -682,18 +682,6 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     }
   };
 
-  const stashAllItems = async () => {
-    const activeItems = items.filter(i => !i.isInLibrary);
-    for (const item of activeItems) {
-      const itemRef = doc(db, 'lists', listId, 'items', item.id);
-      await updateDoc(itemRef, {
-        isInLibrary: true,
-        isPurchased: false,
-        updatedAt: serverTimestamp()
-      });
-    }
-  };
-
   const reAddItem = async (item: ShoppingItem, isInstant: boolean = false) => {
     try {
       if (isInstant) {
@@ -807,22 +795,13 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
               <span className="hidden sm:inline">Invite</span>
             </button>
             {viewMode === 'shopping' && (
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={stashAllItems}
-                  className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest hover:underline transition-colors"
-                  title="Move all current items to Library"
-                >
-                  Stash All
-                </button>
-                <button 
-                  onClick={clearCompleted}
-                  className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest hover:underline disabled:text-[var(--text-secondary)] transition-colors"
-                  disabled={!filteredItems.some(i => i.isPurchased)}
-                >
-                  Clear
-                </button>
-              </div>
+              <button
+                onClick={clearCompleted}
+                className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest hover:underline disabled:text-[var(--text-secondary)] transition-colors"
+                disabled={!filteredItems.some(i => i.isPurchased)}
+              >
+                Clear
+              </button>
             )}
           </div>
         </div>
