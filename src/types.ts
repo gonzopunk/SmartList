@@ -15,7 +15,7 @@ export interface ShoppingItem {
   originalName: string;
   category: string;
   isStaple: boolean;
-  frequency?: 'staple' | 'occasional' | 'special';
+  frequency?: 'staple' | 'as-needed' | 'occasional' | 'special';
   isPurchased: boolean;
   isInLibrary: boolean;
   quantity: string;

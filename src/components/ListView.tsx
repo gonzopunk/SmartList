@@ -74,7 +74,7 @@ const ItemRow: React.FC<ItemRowProps> = ({
   handlePointerMove,
   handlePointerUpOrLeave
 }) => {
-  const freq = item.frequency || (item.isStaple ? 'staple' : 'occasional');
+  const isStaple = item.frequency === 'staple' || (item.frequency === undefined && item.isStaple);
   
   return (
     <div className="relative">
@@ -213,22 +213,21 @@ const ItemRow: React.FC<ItemRowProps> = ({
             className={cn(
               "h-[44px] px-2 flex items-center transition-opacity",
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100",
-              item.isStaple ? "text-indigo-600" : (CATEGORY_COLORS[item.category]?.icon || "text-blue-500/70 hover:text-blue-500")
+              isStaple ? "text-indigo-600" : (CATEGORY_COLORS[item.category]?.icon || "text-blue-500/70 hover:text-blue-500")
             )}
           >
-            <Tag className={cn("w-4 h-4", item.isStaple && "fill-indigo-50 dark:fill-indigo-900/20")} />
+            <Tag className={cn("w-4 h-4", isStaple && "fill-indigo-50 dark:fill-indigo-900/20")} />
           </button>
           
           <button 
             onClick={() => toggleStaple(item)}
             className={cn(
-              "h-[44px] px-2 flex items-center text-[8px] font-bold uppercase tracking-widest transition-opacity",
+              "h-[44px] px-2 flex items-center text-[8px] font-bold uppercase tracking-widest transition-opacity whitespace-nowrap",
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100",
-              freq === 'staple' ? "text-indigo-600" : 
-              freq === 'special' ? "text-amber-600 dark:text-amber-400" : "text-[var(--text-secondary)]"
+              isStaple ? "text-indigo-600" : "text-[var(--text-secondary)]"
             )}
           >
-            {freq === 'staple' ? "Staple" : freq === 'special' ? "Special" : "Occas"}
+            {isStaple ? "Staple" : "As Needed"}
           </button>
 
           <button 
@@ -498,9 +497,9 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
 
   const toggleStaple = async (item: ShoppingItem) => {
     try {
-      const frequencies: ('staple' | 'occasional' | 'special')[] = ['staple', 'occasional', 'special'];
-      const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'occasional');
-      const nextFreq = frequencies[(frequencies.indexOf(currentFreq) + 1) % frequencies.length];
+      const isCurrentlyStaple = item.frequency === 'staple' || (item.frequency === undefined && item.isStaple);
+      const nextFreq: 'staple' | 'as-needed' = isCurrentlyStaple ? 'as-needed' : 'staple';
+      const nextIsStaple = !isCurrentlyStaple;
       
       // Freeze state if not already selected
       if (selectedItemId !== item.id) {
@@ -508,13 +507,13 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
       }
       setFrozenStates(prev => ({
         ...prev,
-        [item.id]: prev[item.id] || { isInLibrary: item.isInLibrary ?? false, frequency: currentFreq, category: item.category }
+        [item.id]: prev[item.id] || { isInLibrary: item.isInLibrary ?? false, frequency: isCurrentlyStaple ? 'staple' : 'as-needed', category: item.category }
       }));
 
       const itemRef = doc(db, 'lists', listId, 'items', item.id);
       await updateDoc(itemRef, {
         frequency: nextFreq,
-        isStaple: nextFreq === 'staple', // Keep legacy sync
+        isStaple: nextIsStaple,
         isInLibrary: item.isInLibrary ?? false,
         updatedAt: serverTimestamp()
       });
@@ -529,7 +528,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
       if (selectedItemId !== item.id) {
         setSelectedItemId(item.id);
       }
-      const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'occasional');
+      const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'as-needed');
       setFrozenStates(prev => ({
         ...prev,
         [item.id]: prev[item.id] || { isInLibrary: item.isInLibrary ?? false, frequency: currentFreq, category: item.category }
@@ -641,7 +640,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         setFrozenStates({
           [itemId]: { 
             isInLibrary: item.isInLibrary ?? false, 
-            frequency: item.frequency || (item.isStaple ? 'staple' : 'occasional'),
+            frequency: item.frequency || (item.isStaple ? 'staple' : 'as-needed'),
             category: item.category 
           }
         });
@@ -698,7 +697,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         if (selectedItemId !== item.id) {
           setSelectedItemId(item.id);
         }
-        const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'occasional');
+        const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'as-needed');
         setFrozenStates(prev => ({
           ...prev,
           [item.id]: { isInLibrary: item.isInLibrary ?? false, frequency: currentFreq, category: item.category }
@@ -740,7 +739,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     if (viewMode === 'shopping') return !inLibrary;
     
     if (inLibrary) {
-      const freq = isFrozen ? isFrozen.frequency : (item.frequency || (item.isStaple ? 'staple' : 'occasional'));
+      const freq = isFrozen ? isFrozen.frequency : (item.frequency || (item.isStaple ? 'staple' : 'as-needed'));
       if (viewMode === 'staples') return freq === 'staple';
       if (viewMode === 'as-needed') return freq !== 'staple';
     }

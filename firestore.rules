@@ -109,7 +109,7 @@ service cloud.firestore {
         && data.isStaple is bool
         && data.isPurchased is bool
         && (data.keys().hasAny(['isInLibrary']) ? data.isInLibrary is bool : true)
-        && (data.keys().hasAny(['frequency']) ? data.frequency in ['staple', 'occasional', 'special'] : true)
+        && (data.keys().hasAny(['frequency']) ? data.frequency in ['staple', 'as-needed', 'occasional', 'special'] : true)
         && data.updatedAt == request.time;
     }
 
