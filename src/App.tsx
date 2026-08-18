@@ -6,11 +6,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { subscribeToAuth, loginWithGoogle, auth, db } from './lib/firebase';
 import { User } from 'firebase/auth';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, deleteDoc, setDoc, getDocs, updateDoc } from 'firebase/firestore';
 import { ShoppingList } from './types';
 import { Plus, List as ListIcon, LogOut, Loader2, ChevronRight, Share2, Trash2, Moon, Sun, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ListView } from './components/ListView';
+import { ListView, normalizeItemFrequency } from './components/ListView';
 import { cn } from './lib/utils';
 import { claimPendingInvites, describeMemberError, joinListById } from './lib/members';
 
@@ -157,6 +157,30 @@ export default function App() {
         ...d.data()
       })) as ShoppingList[];
       setLists(listData);
+
+      // Auto-migrate legacy items across all user's lists
+      listData.forEach(async (list) => {
+        try {
+          const itemsSnap = await getDocs(collection(db, 'lists', list.id, 'items'));
+          itemsSnap.docs.forEach(async (itemDoc) => {
+            const raw = itemDoc.data();
+            const { isStaple, frequency } = normalizeItemFrequency(raw);
+            if (raw.frequency !== frequency || raw.isStaple !== isStaple) {
+              try {
+                await updateDoc(doc(db, 'lists', list.id, 'items', itemDoc.id), {
+                  frequency,
+                  isStaple,
+                  updatedAt: serverTimestamp()
+                });
+              } catch (err) {
+                console.error("Migration error for item:", itemDoc.id, err);
+              }
+            }
+          });
+        } catch (err) {
+          console.error("Error migrating list items:", list.id, err);
+        }
+      });
     });
 
     return () => unsubscribe();

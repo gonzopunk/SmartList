@@ -23,6 +23,13 @@ const CATEGORY_COLORS: Record<string, { text: string; dot: string; border: strin
   Other: { text: 'text-slate-500/70 dark:text-slate-400/60', dot: 'bg-slate-400', border: 'border-l-slate-400/40', icon: 'text-slate-400/60' },
 };
 
+export function normalizeItemFrequency(raw: { frequency?: string; isStaple?: boolean }): { isStaple: boolean; frequency: 'staple' | 'as-needed' } {
+  const isLegacyOccasOrSpecial = raw.frequency === 'occasional' || raw.frequency === 'special';
+  const isStaple = !isLegacyOccasOrSpecial && (raw.frequency === 'staple' || (raw.frequency === undefined && raw.isStaple === true));
+  const frequency: 'staple' | 'as-needed' = isStaple ? 'staple' : 'as-needed';
+  return { isStaple, frequency };
+}
+
 interface ItemRowProps {
   item: ShoppingItem;
   isLibrary: boolean;
@@ -74,7 +81,7 @@ const ItemRow: React.FC<ItemRowProps> = ({
   handlePointerMove,
   handlePointerUpOrLeave
 }) => {
-  const isStaple = item.frequency === 'staple' || (item.frequency === undefined && item.isStaple);
+  const { isStaple } = normalizeItemFrequency(item);
   
   return (
     <div className="relative">
@@ -374,12 +381,35 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     );
 
     const unsubscribeItems = onSnapshot(q, (snapshot) => {
-      const itemData = snapshot.docs.map(d => ({
-        id: d.id,
-        listId,
-        ...d.data()
-      })) as ShoppingItem[];
+      const itemData = snapshot.docs.map(d => {
+        const raw = d.data();
+        const { isStaple, frequency } = normalizeItemFrequency(raw);
+        return {
+          id: d.id,
+          listId,
+          ...raw,
+          isStaple,
+          frequency
+        } as ShoppingItem;
+      });
       setItems(itemData);
+
+      // Auto-migrate legacy items in Firestore to ensure database consistency
+      snapshot.docs.forEach(async (d) => {
+        const raw = d.data();
+        const { isStaple, frequency } = normalizeItemFrequency(raw);
+        if (raw.frequency !== frequency || raw.isStaple !== isStaple) {
+          try {
+            await updateDoc(doc(db, 'lists', listId, 'items', d.id), {
+              frequency,
+              isStaple,
+              updatedAt: serverTimestamp()
+            });
+          } catch (e) {
+            console.error("Auto-migration update failed for item:", d.id, e);
+          }
+        }
+      });
     });
 
     return () => {
@@ -418,6 +448,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         originalName: text,
         category,
         isStaple: isStapleSuggestion,
+        frequency: isStapleSuggestion ? 'staple' : 'as-needed',
         isPurchased: false,
         isInLibrary: false,
         quantity: quantity || "",
@@ -464,6 +495,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
             originalName: "Bulk Import",
             category: item.category,
             isStaple: item.isStapleSuggestion,
+            frequency: item.isStapleSuggestion ? 'staple' : 'as-needed',
             isPurchased: !!item.isPurchased,
             isInLibrary: false, // Import directly to shopping list for consistency
             quantity: item.quantity || "",
@@ -497,7 +529,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
 
   const toggleStaple = async (item: ShoppingItem) => {
     try {
-      const isCurrentlyStaple = item.frequency === 'staple' || (item.frequency === undefined && item.isStaple);
+      const { isStaple: isCurrentlyStaple } = normalizeItemFrequency(item);
       const nextFreq: 'staple' | 'as-needed' = isCurrentlyStaple ? 'as-needed' : 'staple';
       const nextIsStaple = !isCurrentlyStaple;
       
@@ -528,7 +560,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
       if (selectedItemId !== item.id) {
         setSelectedItemId(item.id);
       }
-      const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'as-needed');
+      const currentFreq = normalizeItemFrequency(item).frequency;
       setFrozenStates(prev => ({
         ...prev,
         [item.id]: prev[item.id] || { isInLibrary: item.isInLibrary ?? false, frequency: currentFreq, category: item.category }
@@ -640,7 +672,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         setFrozenStates({
           [itemId]: { 
             isInLibrary: item.isInLibrary ?? false, 
-            frequency: item.frequency || (item.isStaple ? 'staple' : 'as-needed'),
+            frequency: normalizeItemFrequency(item).frequency,
             category: item.category 
           }
         });
@@ -697,7 +729,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         if (selectedItemId !== item.id) {
           setSelectedItemId(item.id);
         }
-        const currentFreq = item.frequency || (item.isStaple ? 'staple' : 'as-needed');
+        const currentFreq = normalizeItemFrequency(item).frequency;
         setFrozenStates(prev => ({
           ...prev,
           [item.id]: { isInLibrary: item.isInLibrary ?? false, frequency: currentFreq, category: item.category }
@@ -739,9 +771,9 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     if (viewMode === 'shopping') return !inLibrary;
     
     if (inLibrary) {
-      const freq = isFrozen ? isFrozen.frequency : (item.frequency || (item.isStaple ? 'staple' : 'as-needed'));
+      const freq = isFrozen ? isFrozen.frequency : normalizeItemFrequency(item).frequency;
       if (viewMode === 'staples') return freq === 'staple';
-      if (viewMode === 'as-needed') return freq !== 'staple';
+      if (viewMode === 'as-needed') return freq === 'as-needed';
     }
     return false;
   }).sort((a, b) => {
