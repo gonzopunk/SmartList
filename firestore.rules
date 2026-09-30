@@ -161,5 +161,21 @@ service cloud.firestore {
         allow delete: if isMember(listId);
       }
     }
+
+    // The Menu Board keeps its data in this database too, but entirely inside
+    // each user's own subtree and with no shape validation. That is deliberate:
+    // it is single-user private data, and leaving the shape open means the Menu
+    // Board's schema can keep changing without anyone editing rules by hand.
+    // The two apps meet only at /lists, under the rules above.
+    match /menuBoard/{userId} {
+      function isSelf() {
+        return isSignedIn() && request.auth.uid == userId;
+      }
+      allow read, write: if isSelf();
+
+      match /{subPath=**} {
+        allow read, write: if isSelf();
+      }
+    }
   }
 }

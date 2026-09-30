@@ -392,24 +392,10 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
           frequency
         } as ShoppingItem;
       });
+      // Legacy 'occasional'/'special' frequencies are normalized on read above,
+      // and any edit writes the normalized value back, so old documents correct
+      // themselves as they are touched. No sweep needed.
       setItems(itemData);
-
-      // Auto-migrate legacy items in Firestore to ensure database consistency
-      snapshot.docs.forEach(async (d) => {
-        const raw = d.data();
-        const { isStaple, frequency } = normalizeItemFrequency(raw);
-        if (raw.frequency !== frequency || raw.isStaple !== isStaple) {
-          try {
-            await updateDoc(doc(db, 'lists', listId, 'items', d.id), {
-              frequency,
-              isStaple,
-              updatedAt: serverTimestamp()
-            });
-          } catch (e) {
-            console.error("Auto-migration update failed for item:", d.id, e);
-          }
-        }
-      });
     });
 
     return () => {
