@@ -9,6 +9,7 @@
         "ownerId": { "type": "string", "description": "The user who created the list" },
         "members": { "type": "array", "description": "List of user UIDs who have access" },
         "pendingEmails": { "type": "array", "description": "Emails invited but not yet signed up" },
+        "categories": { "type": "array", "description": "Custom categories for this shopping list", "items": { "type": "string" } },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "ownerId", "members", "createdAt"]

@@ -1,27 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../lib/firebase';
 import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs, where } from 'firebase/firestore';
-import { ShoppingItem } from '../types';
+import { ShoppingItem, ShoppingList } from '../types';
 import { User } from 'firebase/auth';
-import { ArrowLeft, Plus, CheckCircle2, Circle, Trash2, Tag, Info, AlertCircle, ShoppingCart, Loader2, Mic, MicOff, FileDown, X, Pencil, Share2 } from 'lucide-react';
+import { ArrowLeft, Plus, CheckCircle2, Check, Circle, Trash2, Tag, Info, AlertCircle, ShoppingCart, Loader2, Mic, MicOff, FileDown, X, Pencil, Share2, ArrowRightLeft, MoreHorizontal, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { normalizeItem, bulkNormalizeItems } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { ShareModal } from './ShareModal';
-
-const COMMON_CATEGORIES = ['Produce', 'Dairy', 'Meat', 'Frozen', 'Pantry', 'Bakery', 'Household', 'Beverages', 'Other'];
-
-const CATEGORY_COLORS: Record<string, { text: string; dot: string; border: string; icon: string }> = {
-  Produce: { text: 'text-emerald-600/70 dark:text-emerald-400/60', dot: 'bg-emerald-400', border: 'border-l-emerald-400/40', icon: 'text-emerald-500/60' },
-  Dairy: { text: 'text-blue-600/70 dark:text-blue-400/60', dot: 'bg-blue-400', border: 'border-l-blue-400/40', icon: 'text-blue-500/60' },
-  Meat: { text: 'text-rose-600/70 dark:text-rose-400/60', dot: 'bg-rose-400', border: 'border-l-rose-400/40', icon: 'text-rose-500/60' },
-  Frozen: { text: 'text-cyan-600/70 dark:text-cyan-400/60', dot: 'bg-cyan-400', border: 'border-l-cyan-400/40', icon: 'text-cyan-500/60' },
-  Pantry: { text: 'text-amber-600/70 dark:text-amber-400/60', dot: 'bg-amber-400', border: 'border-l-amber-400/40', icon: 'text-amber-500/60' },
-  Bakery: { text: 'text-orange-600/70 dark:text-orange-400/60', dot: 'bg-orange-400', border: 'border-l-orange-400/40', icon: 'text-orange-500/60' },
-  Household: { text: 'text-purple-600/70 dark:text-purple-400/60', dot: 'bg-purple-400', border: 'border-l-purple-400/40', icon: 'text-purple-500/60' },
-  Beverages: { text: 'text-pink-600/70 dark:text-pink-400/60', dot: 'bg-pink-400', border: 'border-l-pink-400/40', icon: 'text-pink-500/60' },
-  Other: { text: 'text-slate-500/70 dark:text-slate-400/60', dot: 'bg-slate-400', border: 'border-l-slate-400/40', icon: 'text-slate-400/60' },
-};
+import { CategoriesModal, getCategoryColor, DEFAULT_GROCERY_CATEGORIES } from './CategoriesModal';
 
 export function normalizeItemFrequency(raw: { frequency?: string; isStaple?: boolean }): { isStaple: boolean; frequency: 'staple' | 'as-needed' } {
   const isLegacyOccasOrSpecial = raw.frequency === 'occasional' || raw.frequency === 'special';
@@ -37,6 +24,7 @@ interface ItemRowProps {
   editingNameId: string | null;
   editingQuantityId: string | null;
   editingCategoryId: string | null;
+  movingItemId: string | null;
   tempName: string;
   tempQuantity: string;
   setTempName: (val: string) => void;
@@ -44,6 +32,7 @@ interface ItemRowProps {
   setEditingNameId: (val: string | null) => void;
   setEditingQuantityId: (val: string | null) => void;
   setEditingCategoryId: (val: string | null) => void;
+  setMovingItemId: (val: string | null) => void;
   updateName: (item: ShoppingItem, name: string) => void;
   updateQuantity: (item: ShoppingItem, qty: string) => void;
   updateCategory: (item: ShoppingItem, cat: string) => void;
@@ -54,6 +43,12 @@ interface ItemRowProps {
   handlePointerDown: (e: React.PointerEvent, id: string) => void;
   handlePointerMove: (e: React.PointerEvent) => void;
   handlePointerUpOrLeave: () => void;
+  otherLists: ShoppingList[];
+  onMoveToList: (item: ShoppingItem, targetListId: string, targetListName: string) => void;
+  onCreateAndMove: (item: ShoppingItem, newListName: string) => void;
+  setSelectedItemId: (id: string | null) => void;
+  categories: string[];
+  onOpenCategoriesModal: () => void;
 }
 
 const ItemRow: React.FC<ItemRowProps> = ({ 
@@ -63,6 +58,7 @@ const ItemRow: React.FC<ItemRowProps> = ({
   editingNameId,
   editingQuantityId,
   editingCategoryId,
+  movingItemId,
   tempName,
   tempQuantity,
   setTempName,
@@ -70,6 +66,7 @@ const ItemRow: React.FC<ItemRowProps> = ({
   setEditingNameId,
   setEditingQuantityId,
   setEditingCategoryId,
+  setMovingItemId,
   updateName,
   updateQuantity,
   updateCategory,
@@ -79,9 +76,25 @@ const ItemRow: React.FC<ItemRowProps> = ({
   reAddItem,
   handlePointerDown,
   handlePointerMove,
-  handlePointerUpOrLeave
+  handlePointerUpOrLeave,
+  otherLists,
+  onMoveToList,
+  onCreateAndMove,
+  setSelectedItemId,
+  categories,
+  onOpenCategoriesModal
 }) => {
   const { isStaple } = normalizeItemFrequency(item);
+  const [isCreatingInline, setIsCreatingInline] = useState(false);
+  const [newInlineName, setNewInlineName] = useState('');
+  const itemColor = getCategoryColor(item.category);
+
+  useEffect(() => {
+    if (movingItemId !== item.id) {
+      setIsCreatingInline(false);
+      setNewInlineName('');
+    }
+  }, [movingItemId, item.id]);
   
   return (
     <div className="relative">
@@ -101,8 +114,8 @@ const ItemRow: React.FC<ItemRowProps> = ({
         onPointerLeave={handlePointerUpOrLeave}
         className={cn(
           "group flex items-center min-h-[44px] px-1 transition-all border-l-[3px]",
-          CATEGORY_COLORS[item.category]?.border || "border-l-transparent",
-          (item.id === selectedItemId || item.id === editingCategoryId || item.id === editingNameId || item.id === editingQuantityId) 
+          itemColor?.border || "border-l-transparent",
+          (item.id === selectedItemId || item.id === editingCategoryId || item.id === editingNameId || item.id === editingQuantityId || item.id === movingItemId) 
             ? "bg-indigo-50/50 dark:bg-zinc-800/40 selected-item-active shadow-sm border-y border-transparent sm:border-y-indigo-100/50 dark:sm:border-y-zinc-700/30" 
             : "hover:bg-[var(--bg-secondary)]"
         )}
@@ -203,8 +216,25 @@ const ItemRow: React.FC<ItemRowProps> = ({
         </div>
 
         <div className="flex items-center gap-0.5">
+          {/* Mobile more button if not selected */}
+          {selectedItemId !== item.id && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedItemId(item.id);
+              }}
+              className="sm:hidden h-[44px] px-2 flex items-center text-[var(--text-secondary)] opacity-50 hover:opacity-100 transition-opacity"
+              title="Item actions"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Edit name */}
           <button 
             onClick={() => {
+              setMovingItemId(null);
+              setEditingCategoryId(null);
               setEditingNameId(item.id);
               setTempName(item.name);
             }}
@@ -212,20 +242,28 @@ const ItemRow: React.FC<ItemRowProps> = ({
               "h-[44px] px-2 flex items-center text-[var(--text-secondary)] hover:text-blue-500 transition-opacity",
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100"
             )}
+            title="Edit name"
           >
             <Pencil className="w-4 h-4" />
           </button>
+
+          {/* Change Category */}
           <button 
-            onClick={() => setEditingCategoryId(editingCategoryId === item.id ? null : item.id)}
+            onClick={() => {
+              setMovingItemId(null);
+              setEditingCategoryId(editingCategoryId === item.id ? null : item.id);
+            }}
             className={cn(
               "h-[44px] px-2 flex items-center transition-opacity",
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100",
-              isStaple ? "text-indigo-600" : (CATEGORY_COLORS[item.category]?.icon || "text-blue-500/70 hover:text-blue-500")
+              isStaple ? "text-indigo-600" : (itemColor?.icon || "text-blue-500/70 hover:text-blue-500")
             )}
+            title="Categorize"
           >
             <Tag className={cn("w-4 h-4", isStaple && "fill-indigo-50 dark:fill-indigo-900/20")} />
           </button>
           
+          {/* Staple Toggle */}
           <button 
             onClick={() => toggleStaple(item)}
             className={cn(
@@ -233,35 +271,217 @@ const ItemRow: React.FC<ItemRowProps> = ({
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100",
               isStaple ? "text-indigo-600" : "text-[var(--text-secondary)]"
             )}
+            title={isStaple ? "Staple item (click to set As Needed)" : "As Needed item (click to set Staple)"}
           >
             {isStaple ? "Staple" : "As Needed"}
           </button>
 
+          {/* Move to another list */}
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditingCategoryId(null);
+              setMovingItemId(movingItemId === item.id ? null : item.id);
+            }}
+            className={cn(
+              "h-[44px] px-2 flex items-center transition-opacity",
+              item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100",
+              movingItemId === item.id ? "text-blue-600 dark:text-blue-400 font-bold opacity-100" : "text-[var(--text-secondary)] hover:text-blue-600 dark:hover:text-blue-400"
+            )}
+            title="Move to another list"
+          >
+            <ArrowRightLeft className="w-4 h-4" />
+          </button>
+
+          {/* Delete */}
           <button 
             onClick={() => deleteItem(item.id)}
             className={cn(
               "h-[44px] px-2 flex items-center text-[var(--text-secondary)] hover:text-red-500 transition-opacity",
               item.id === selectedItemId ? "flex opacity-100" : "hidden sm:flex sm:opacity-0 sm:group-hover:opacity-100"
             )}
+            title="Delete item"
           >
             <Trash2 className="w-4 h-4" />
           </button>
+
+          {/* Mobile close actions button when selected */}
+          {item.id === selectedItemId && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedItemId(null);
+                setEditingCategoryId(null);
+                setMovingItemId(null);
+              }}
+              className="sm:hidden h-[44px] px-1.5 flex items-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-opacity"
+              title="Close actions"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
+
+        {/* Category dropdown */}
         {editingCategoryId === item.id && (
-          <div className="absolute right-0 top-[44px] w-48 bg-[var(--bg-primary)] border border-[var(--border-primary)] shadow-2xl rounded-xl z-20 p-1 grid grid-cols-1 gap-0.5">
-            <p className="text-[9px] font-black text-[var(--text-secondary)] uppercase tracking-widest px-3 py-2">Categorize</p>
-            {COMMON_CATEGORIES.map(cat => (
+          <div className="absolute right-0 top-[44px] w-52 bg-[var(--bg-primary)] border border-[var(--border-primary)] shadow-2xl rounded-xl z-20 p-1 grid grid-cols-1 gap-0.5">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--border-primary)] mb-1">
+              <p className="text-[9px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Categorize</p>
               <button
-                key={cat}
-                onClick={() => updateCategory(item, cat)}
-                className={cn(
-                  "h-10 px-3 text-xs text-left rounded-lg transition-colors flex items-center",
-                  item.category === cat ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-bold" : "text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
-                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditingCategoryId(null);
+                  onOpenCategoriesModal();
+                }}
+                className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline font-semibold"
               >
-                {cat}
+                Edit
               </button>
-            ))}
+            </div>
+            <div className="max-h-52 overflow-y-auto space-y-0.5">
+              {categories.map(cat => {
+                const colors = getCategoryColor(cat);
+                const isSelected = item.category === cat;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => updateCategory(item, cat)}
+                    className={cn(
+                      "h-9 px-3 text-xs text-left rounded-lg transition-colors flex items-center justify-between",
+                      isSelected ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-bold" : "text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <div className={cn("w-2 h-2 rounded-full shrink-0", colors.dot)} />
+                      <span className="truncate">{cat}</span>
+                    </div>
+                    {isSelected && <Check className="w-3.5 h-3.5 shrink-0 text-blue-600 dark:text-blue-400" />}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="pt-1 mt-1 border-t border-[var(--border-primary)] space-y-0.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditingCategoryId(null);
+                  onOpenCategoriesModal();
+                }}
+                className="w-full h-8 px-2 text-xs text-left rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 flex items-center justify-between font-medium"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5" />
+                  <span>Edit categories...</span>
+                </span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditingCategoryId(null);
+                  setMovingItemId(item.id);
+                }}
+                className="w-full h-8 px-2 text-xs text-left rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 flex items-center justify-between font-medium"
+              >
+                <span className="flex items-center gap-1.5">
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  <span>Move to list...</span>
+                </span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Move to another list dropdown */}
+        {movingItemId === item.id && (
+          <div 
+            onClick={(e) => e.stopPropagation()} 
+            className="absolute right-0 top-[44px] w-64 bg-[var(--bg-primary)] border border-[var(--border-primary)] shadow-2xl rounded-xl z-30 p-2 text-left"
+          >
+            <div className="flex items-center justify-between px-2.5 py-1.5 mb-1 border-b border-[var(--border-primary)]">
+              <div className="flex items-center gap-1.5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-wider">
+                <ArrowRightLeft className="w-3.5 h-3.5 text-blue-500" />
+                <span>Move to List</span>
+              </div>
+              <button 
+                onClick={() => setMovingItemId(null)}
+                className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="max-h-48 overflow-y-auto space-y-0.5 py-1">
+              {otherLists.length === 0 ? (
+                <div className="px-3 py-2 text-center">
+                  <p className="text-xs text-[var(--text-secondary)] mb-1">No other lists yet.</p>
+                  <p className="text-[10px] text-[var(--text-secondary)] opacity-75">Create one below to move this item there.</p>
+                </div>
+              ) : (
+                otherLists.map(list => (
+                  <button
+                    key={list.id}
+                    onClick={() => onMoveToList(item, list.id, list.name)}
+                    className="w-full h-9 px-2.5 text-xs text-left rounded-lg transition-colors flex items-center justify-between text-[var(--text-primary)] hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 group"
+                  >
+                    <span className="truncate font-medium">{list.name}</span>
+                    <ChevronRight className="w-3.5 h-3.5 opacity-40 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all text-blue-500" />
+                  </button>
+                ))
+              )}
+            </div>
+
+            {/* Quick create list inline */}
+            <div className="pt-1.5 mt-1 border-t border-[var(--border-primary)]">
+              {!isCreatingInline ? (
+                <button
+                  onClick={() => setIsCreatingInline(true)}
+                  className="w-full h-8 px-2 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg flex items-center gap-1.5 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New list...</span>
+                </button>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (newInlineName.trim()) {
+                      onCreateAndMove(item, newInlineName.trim());
+                      setNewInlineName('');
+                      setIsCreatingInline(false);
+                    }
+                  }}
+                  className="flex items-center gap-1 mt-1"
+                >
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="List name..."
+                    value={newInlineName}
+                    onChange={(e) => setNewInlineName(e.target.value)}
+                    className="flex-1 min-w-0 px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-md text-xs text-[var(--text-primary)] outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newInlineName.trim()}
+                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold rounded-md disabled:opacity-50 transition-colors"
+                  >
+                    Move
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingInline(false);
+                      setNewInlineName('');
+                    }}
+                    className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         )}
       </motion.div>
@@ -275,14 +495,25 @@ interface ListViewProps {
   listName: string;
   onBack: () => void;
   user: User;
+  allLists?: ShoppingList[];
+  onSwitchList?: (targetListId: string) => void;
 }
 
-export function ListView({ listId, listName, onBack, user }: ListViewProps) {
+export function ListView({ listId, listName, onBack, user, allLists = [], onSwitchList }: ListViewProps) {
   const [items, setItems] = useState<ShoppingItem[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingQuantityId, setEditingQuantityId] = useState<string | null>(null);
+  const [movingItemId, setMovingItemId] = useState<string | null>(null);
+  const [movedToListNotice, setMovedToListNotice] = useState<{
+    item: ShoppingItem;
+    targetListId: string;
+    targetListName: string;
+    sourceListId: string;
+  } | null>(null);
+  const [customCategories, setCustomCategories] = useState<string[]>(DEFAULT_GROCERY_CATEGORIES);
+  const [isCategoriesModalOpen, setIsCategoriesModalOpen] = useState(false);
   const [tempQuantity, setTempQuantity] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -306,13 +537,20 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     }
   }, [lastMovedItem]);
 
+  useEffect(() => {
+    if (movedToListNotice) {
+      const timer = setTimeout(() => setMovedToListNotice(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [movedToListNotice]);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   useEffect(() => {
-    // Tap to exit logic for edit/selection/category modes
-    const isActive = selectedItemId || editingCategoryId || editingNameId || editingQuantityId;
+    // Tap to exit logic for edit/selection/category/move modes
+    const isActive = selectedItemId || editingCategoryId || editingNameId || editingQuantityId || movingItemId;
 
     if (isActive) {
       const handleGlobalClick = (e: MouseEvent | TouchEvent) => {
@@ -323,6 +561,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
           setEditingCategoryId(null);
           setEditingNameId(null);
           setEditingQuantityId(null);
+          setMovingItemId(null);
           setFrozenStates({});
         }
       };
@@ -339,7 +578,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         document.removeEventListener('touchstart', handleGlobalClick);
       };
     }
-  }, [selectedItemId, editingCategoryId, editingNameId, editingQuantityId]);
+  }, [selectedItemId, editingCategoryId, editingNameId, editingQuantityId, movingItemId]);
 
   useEffect(() => {
     // Autosuggest logic
@@ -361,7 +600,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
   }, [inputValue, items]);
 
   useEffect(() => {
-    // Fetch list metadata for sharing
+    // Fetch list metadata for sharing and categories
     const listRef = doc(db, 'lists', listId);
     const unsubscribeMetadata = onSnapshot(listRef, (snapshot) => {
       if (snapshot.exists()) {
@@ -371,6 +610,11 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
           members: data.members ?? [],
           pendingEmails: data.pendingEmails ?? [],
         });
+        if (data.categories && Array.isArray(data.categories) && data.categories.length > 0) {
+          setCustomCategories(data.categories);
+        } else {
+          setCustomCategories(DEFAULT_GROCERY_CATEGORIES);
+        }
       }
     });
 
@@ -410,7 +654,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     setIsAdding(true);
 
     try {
-      const { normalizedName, category, isStapleSuggestion, quantity } = await normalizeItem(text);
+      const { normalizedName, category, isStapleSuggestion, quantity } = await normalizeItem(text, customCategories);
       
       const duplicate = items.find(i => i.name.toLowerCase() === normalizedName.toLowerCase());
       
@@ -459,7 +703,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     if (!importText.trim() || isBulkImporting) return;
     setIsBulkImporting(true);
     try {
-      const itemsToImport = await bulkNormalizeItems(importText);
+      const itemsToImport = await bulkNormalizeItems(importText, customCategories);
       
       // Batch add items
       for (const item of itemsToImport) {
@@ -750,6 +994,111 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     }
   };
 
+  const otherLists = (allLists || []).filter(l => l.id !== listId);
+
+  const moveItemToList = async (item: ShoppingItem, targetListId: string, targetListName: string) => {
+    try {
+      // Optimistically close dropdown and selection
+      setMovingItemId(null);
+      if (selectedItemId === item.id) setSelectedItemId(null);
+
+      // Check if target list already has an item with this normalized name
+      const targetItemsSnap = await getDocs(collection(db, 'lists', targetListId, 'items'));
+      const existingDoc = targetItemsSnap.docs.find(d => 
+        d.data().name?.toLowerCase() === item.name.toLowerCase()
+      );
+
+      const { isStaple, frequency } = normalizeItemFrequency(item);
+
+      if (existingDoc) {
+        await updateDoc(doc(db, 'lists', targetListId, 'items', existingDoc.id), {
+          isInLibrary: item.isInLibrary ?? false,
+          isPurchased: item.isPurchased ?? false,
+          quantity: item.quantity || existingDoc.data().quantity || "",
+          category: item.category || existingDoc.data().category || "Other",
+          isStaple,
+          frequency,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, 'lists', targetListId, 'items'), {
+          name: item.name,
+          originalName: item.originalName || item.name,
+          category: item.category || "Other",
+          isStaple,
+          frequency,
+          isPurchased: item.isPurchased ?? false,
+          isInLibrary: item.isInLibrary ?? false,
+          quantity: item.quantity || "",
+          addedBy: user.uid,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      // Delete from source list
+      await deleteDoc(doc(db, 'lists', listId, 'items', item.id));
+
+      // Show toast notification
+      setMovedToListNotice({
+        item,
+        targetListId,
+        targetListName,
+        sourceListId: listId,
+      });
+    } catch (err) {
+      console.error("Failed to move item to list:", err);
+    }
+  };
+
+  const undoMoveToList = async () => {
+    if (!movedToListNotice) return;
+    const { item, targetListId, sourceListId } = movedToListNotice;
+    try {
+      // Remove from target list
+      const targetItemsSnap = await getDocs(collection(db, 'lists', targetListId, 'items'));
+      const targetDoc = targetItemsSnap.docs.find(d => 
+        d.data().name?.toLowerCase() === item.name.toLowerCase()
+      );
+      if (targetDoc) {
+        await deleteDoc(doc(db, 'lists', targetListId, 'items', targetDoc.id));
+      }
+
+      // Re-add to source list
+      const { isStaple, frequency } = normalizeItemFrequency(item);
+      await addDoc(collection(db, 'lists', sourceListId, 'items'), {
+        name: item.name,
+        originalName: item.originalName || item.name,
+        category: item.category || "Other",
+        isStaple,
+        frequency,
+        isPurchased: item.isPurchased ?? false,
+        isInLibrary: item.isInLibrary ?? false,
+        quantity: item.quantity || "",
+        addedBy: user.uid,
+        updatedAt: serverTimestamp()
+      });
+
+      setMovedToListNotice(null);
+    } catch (err) {
+      console.error("Undo move failed:", err);
+    }
+  };
+
+  const handleCreateListAndMove = async (item: ShoppingItem, newListName: string) => {
+    if (!newListName.trim() || !user) return;
+    try {
+      const newListRef = await addDoc(collection(db, 'lists'), {
+        name: newListName.trim(),
+        ownerId: user.uid,
+        members: [user.uid],
+        createdAt: serverTimestamp()
+      });
+      await moveItemToList(item, newListRef.id, newListName.trim());
+    } catch (err) {
+      console.error("Failed to create list and move item:", err);
+    }
+  };
+
   const filteredItems = items.filter(item => {
     const isFrozen = frozenStates[item.id];
     const inLibrary = isFrozen ? isFrozen.isInLibrary : !!item.isInLibrary;
@@ -767,11 +1116,11 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
     return a.name.localeCompare(b.name);
   });
 
-  // Organize by category
-  const categories: string[] = [...new Set<string>(filteredItems.map(i => {
-    const isFrozen = frozenStates[i.id];
-    return isFrozen ? isFrozen.category : i.category;
-  }))].sort();
+  // Organize by category: custom list categories in their configured order, plus any extra categories from items
+  const activeCategories: string[] = [
+    ...customCategories.filter(cat => filteredItems.some(i => (frozenStates[i.id]?.category || i.category) === cat)),
+    ...new Set<string>(filteredItems.map(i => frozenStates[i.id]?.category || i.category).filter(cat => !customCategories.includes(cat)))
+  ];
 
   return (
     <div className="space-y-4 h-full text-[var(--text-primary)]">
@@ -800,13 +1149,24 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
               {listName}
             </h2>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <span className="hidden sm:inline text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">
               {filteredItems.length} {viewMode === 'shopping' ? 'items' : 'in library'}
             </span>
             <button 
+              onClick={() => setIsCategoriesModalOpen(true)}
+              className="flex items-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold text-[var(--text-primary)] bg-[var(--bg-secondary)] hover:bg-[var(--border-primary)] border border-[var(--border-primary)] transition-all shrink-0"
+              title="Categories"
+              aria-label="Categories"
+            >
+              <Tag className="w-4 h-4 text-blue-500" />
+              <span className="hidden sm:inline">Categories</span>
+            </button>
+            <button 
               onClick={() => setIsShareModalOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/10 hover:bg-blue-100 dark:hover:bg-blue-900/20 transition-all"
+              className="flex items-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/10 hover:bg-blue-100 dark:hover:bg-blue-900/20 transition-all shrink-0"
+              title="Invite members"
+              aria-label="Invite"
             >
               <Share2 className="w-4 h-4" />
               <span className="hidden sm:inline">Invite</span>
@@ -921,8 +1281,8 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
       </form>
 
       <div className="space-y-4 pb-20">
-        {categories.map((category: string) => {
-          const colors = CATEGORY_COLORS[category as string] || CATEGORY_COLORS['Other'];
+        {activeCategories.map((category: string) => {
+          const colors = getCategoryColor(category);
           return (
             <section key={category}>
               <div className="flex items-center gap-1.5 mb-1 px-1">
@@ -947,6 +1307,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
                       editingNameId={editingNameId}
                       editingQuantityId={editingQuantityId}
                       editingCategoryId={editingCategoryId}
+                      movingItemId={movingItemId}
                       tempName={tempName}
                       tempQuantity={tempQuantity}
                       setTempName={setTempName}
@@ -954,6 +1315,7 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
                       setEditingNameId={setEditingNameId}
                       setEditingQuantityId={setEditingQuantityId}
                       setEditingCategoryId={setEditingCategoryId}
+                      setMovingItemId={setMovingItemId}
                       updateName={updateName}
                       updateQuantity={updateQuantity}
                       updateCategory={updateCategory}
@@ -964,6 +1326,12 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
                       handlePointerDown={handlePointerDown}
                       handlePointerMove={handlePointerMove}
                       handlePointerUpOrLeave={handlePointerUpOrLeave}
+                      otherLists={otherLists}
+                      onMoveToList={moveItemToList}
+                      onCreateAndMove={handleCreateListAndMove}
+                      setSelectedItemId={setSelectedItemId}
+                      categories={customCategories}
+                      onOpenCategoriesModal={() => setIsCategoriesModalOpen(true)}
                     />
                   ))}
               </div>
@@ -1060,6 +1428,20 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
         )}
       </AnimatePresence>
 
+      {/* Categories Modal */}
+      <AnimatePresence>
+        {isCategoriesModalOpen && (
+          <CategoriesModal 
+            listId={listId}
+            listName={listName}
+            categories={customCategories}
+            items={items}
+            onClose={() => setIsCategoriesModalOpen(false)}
+            onUpdateCategories={(newCats) => setCustomCategories(newCats)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Undo Notification */}
       <AnimatePresence>
         {lastMovedItem && (
@@ -1083,6 +1465,51 @@ export function ListView({ listId, listName, onBack, user }: ListViewProps) {
             <button 
               onClick={() => setLastMovedItem(null)}
               className="p-1 hover:bg-white/10 rounded-full transition-colors"
+            >
+              <X className="w-3 h-3 opacity-60 hover:opacity-100" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Moved to List Notification */}
+      <AnimatePresence>
+        {movedToListNotice && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, scale: 0.9, x: "-50%" }}
+            className="fixed bottom-6 left-1/2 z-[110] flex items-center gap-2.5 px-4 py-2 bg-zinc-900 border border-zinc-700 text-white shadow-2xl rounded-full min-w-fit max-w-[92vw]"
+          >
+            <ArrowRightLeft className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+            <span className="text-xs font-medium truncate">
+              Moved <strong className="font-semibold text-white">"{movedToListNotice.item.name}"</strong> to <strong className="font-semibold text-blue-400">{movedToListNotice.targetListName}</strong>
+            </span>
+            {onSwitchList && (
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSwitchList(movedToListNotice.targetListId);
+                  setMovedToListNotice(null);
+                }}
+                className="px-2 py-0.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded text-[10px] font-bold uppercase tracking-wider transition-colors shrink-0"
+              >
+                Open
+              </button>
+            )}
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                undoMoveToList();
+              }}
+              className="px-2 py-0.5 bg-white/10 hover:bg-white/20 rounded text-[10px] font-bold uppercase tracking-wider transition-colors text-zinc-300 shrink-0"
+            >
+              Undo
+            </button>
+            <button 
+              onClick={() => setMovedToListNotice(null)}
+              className="p-1 hover:bg-white/10 rounded-full transition-colors shrink-0"
+              aria-label="Dismiss"
             >
               <X className="w-3 h-3 opacity-60 hover:opacity-100" />
             </button>
