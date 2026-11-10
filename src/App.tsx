@@ -485,6 +485,8 @@ export default function App() {
                   listName={lists.find(l => l.id === activeListId)?.name || ""}
                   onBack={() => setActiveListId(null)}
                   user={user}
+                  allLists={lists}
+                  onSwitchList={(targetListId) => setActiveListId(targetListId)}
                 />
               </motion.div>
             )}

@@ -14,7 +14,14 @@ export interface BulkImportResult {
   items: NormalizedItem[];
 }
 
-export async function normalizeItem(input: string): Promise<NormalizedItem> {
+export async function normalizeItem(input: string, allowedCategories?: string[]): Promise<NormalizedItem> {
+  const catList = allowedCategories && allowedCategories.length > 0
+    ? allowedCategories.join(', ')
+    : 'Produce, Dairy, Meat, Frozen, Pantry, Household, Bakery, Beverages, Other';
+  const defaultCategory = (allowedCategories && allowedCategories.includes('Other')) 
+    ? 'Other' 
+    : (allowedCategories?.[0] || 'Other');
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -22,8 +29,8 @@ export async function normalizeItem(input: string): Promise<NormalizedItem> {
       For example: '3 bags of frozen peas' -> Name: 'peas, frozen', Quantity: '3 bags'.
       Input: "${input}"
       
-      Also provide a likely grocery category (e.g., Produce, Dairy, Meat, Frozen, Pantry, Household) 
-      and whether it's typically a 'staple' item (something people buy repeatedly).`,
+      Assign the most appropriate category from this list: [${catList}]. If none fit cleanly, use '${defaultCategory}'.
+      Also indicate whether it's typically a 'staple' item (something people buy repeatedly).`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -42,7 +49,7 @@ export async function normalizeItem(input: string): Promise<NormalizedItem> {
     const result = JSON.parse(response.text || '{}');
     return {
       normalizedName: result.normalizedName || input.toLowerCase().trim(),
-      category: result.category || "General",
+      category: result.category || defaultCategory,
       isStapleSuggestion: !!result.isStapleSuggestion,
       quantity: result.quantity || ""
     };
@@ -50,13 +57,20 @@ export async function normalizeItem(input: string): Promise<NormalizedItem> {
     console.error("Gemini normalization failed:", error);
     return {
       normalizedName: input.toLowerCase().trim(),
-      category: "General",
+      category: defaultCategory,
       isStapleSuggestion: false
     };
   }
 }
 
-export async function bulkNormalizeItems(input: string): Promise<NormalizedItem[]> {
+export async function bulkNormalizeItems(input: string, allowedCategories?: string[]): Promise<NormalizedItem[]> {
+  const catList = allowedCategories && allowedCategories.length > 0
+    ? allowedCategories.join(', ')
+    : 'Produce, Dairy, Meat, Frozen, Pantry, Household, Bakery, Beverages, Other';
+  const defaultCategory = (allowedCategories && allowedCategories.includes('Other')) 
+    ? 'Other' 
+    : (allowedCategories?.[0] || 'Other');
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -71,7 +85,7 @@ export async function bulkNormalizeItems(input: string): Promise<NormalizedItem[
       4. For each actual shopping item, provide:
          - normalizedName: e.g., 'frozen peas' -> 'peas, frozen'.
          - quantity: extract number and units if present.
-         - category: Choose the best fit from: Produce, Dairy, Meat, Frozen, Pantry, Household, Bakery, Beverages, or Other.
+         - category: Choose the best fit from: ${catList}. If none fit, use '${defaultCategory}'.
          - isStapleSuggestion: true if common recurring purchase.
          - isPurchased: boolean based on checkbox symbols.
       

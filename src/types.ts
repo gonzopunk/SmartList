@@ -5,6 +5,8 @@ export interface ShoppingList {
   name: string;
   ownerId: string;
   members: string[];
+  pendingEmails?: string[];
+  categories?: string[];
   createdAt: Timestamp;
 }
 
