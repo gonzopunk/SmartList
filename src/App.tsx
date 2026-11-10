@@ -8,11 +8,12 @@ import { subscribeToAuth, loginWithGoogle, auth, db } from './lib/firebase';
 import { User } from 'firebase/auth';
 import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, setDoc } from 'firebase/firestore';
 import { ShoppingList } from './types';
-import { Plus, List as ListIcon, LogOut, Loader2, ChevronRight, Moon, Sun, X } from 'lucide-react';
+import { Plus, List as ListIcon, LogOut, Loader2, ChevronRight, Moon, Sun, X, ShoppingCart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ListView } from './components/ListView';
 import { cn } from './lib/utils';
 import { claimPendingInvites, describeMemberError, joinListById } from './lib/members';
+import { useOutstandingCounts } from './lib/cartCounts';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -26,6 +27,15 @@ export default function App() {
   // Tracks which uid we've already run invite handling for. A ref, not state, so
   // the effect can't re-enter itself or read a stale value from its closure.
   const invitesHandledFor = useRef<string | null>(null);
+
+  // Which lists still have something to buy, busiest first. Drives the
+  // "stops to make" reminder, so a separate-store list (Trader Joe's, the
+  // liquor store) can't be forgotten while planning a general grocery run.
+  const outstandingCounts = useOutstandingCounts(lists.map(l => l.id));
+  const stops = lists
+    .map(list => ({ list, count: outstandingCounts[list.id] ?? 0 }))
+    .filter(entry => entry.count > 0)
+    .sort((a, b) => b.count - a.count || a.list.name.localeCompare(b.list.name));
 
   useEffect(() => {
     if (!user) {
@@ -271,13 +281,18 @@ export default function App() {
                 key={list.id}
                 onClick={() => setActiveListId(list.id)}
                 className={cn(
-                  "w-full flex items-center px-4 py-2 text-sm rounded-lg transition-colors text-left truncate",
+                  "w-full flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors text-left",
                   activeListId === list.id 
                     ? "bg-[var(--border-primary)] text-[var(--text-primary)] font-medium" 
                     : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
                 )}
               >
-                {list.name}
+                <span className="truncate flex-1">{list.name}</span>
+                {(outstandingCounts[list.id] ?? 0) > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 bg-amber-500 text-white rounded-full text-[10px] font-black shrink-0">
+                    {outstandingCounts[list.id]}
+                  </span>
+                )}
               </button>
             ))}
             <button 
@@ -367,6 +382,35 @@ export default function App() {
                   </button>
                 </header>
 
+                {stops.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-4 md:p-5 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-900/30 rounded-2xl space-y-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <ShoppingCart className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400">
+                        {stops.length === 1 ? '1 stop to make' : `${stops.length} stops to make`}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {stops.map(({ list, count }) => (
+                        <button
+                          key={list.id}
+                          onClick={() => setActiveListId(list.id)}
+                          className="flex items-center gap-2 pl-3 pr-2 py-1.5 bg-[var(--bg-primary)] border border-amber-200 dark:border-amber-900/40 rounded-xl text-xs font-semibold text-[var(--text-primary)] hover:border-amber-400 active:scale-[0.98] transition-all"
+                        >
+                          <span className="truncate max-w-[12rem]">{list.name}</span>
+                          <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 bg-amber-500 text-white rounded-full text-[10px] font-black">
+                            {count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+
                 {isCreatingList && (
                   <motion.form 
                     initial={{ opacity: 0, scale: 0.95 }}
@@ -407,7 +451,15 @@ export default function App() {
                     >
                       <h3 className="font-semibold text-[var(--text-primary)] mb-1">{list.name}</h3>
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-wider">{list.members.length} members</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-wider shrink-0">{list.members.length} members</span>
+                          {(outstandingCounts[list.id] ?? 0) > 0 && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0">
+                              <ShoppingCart className="w-3 h-3" />
+                              {outstandingCounts[list.id]} to get
+                            </span>
+                          )}
+                        </div>
                         <ChevronRight className="w-4 h-4 text-[var(--text-secondary)] group-hover:text-blue-500 transform group-hover:translate-x-1 transition-all" />
                       </div>
                     </motion.div>

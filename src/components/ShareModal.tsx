@@ -291,7 +291,7 @@ export function ShareModal({
                       <button
                         onClick={() => handleRemove(member.uid)}
                         disabled={busyId === member.uid}
-                        className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
+                        className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-60 hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
                         title="Remove Member"
                       >
                         {busyId === member.uid ? (
@@ -328,7 +328,7 @@ export function ShareModal({
                     <button
                       onClick={() => handleRevoke(email)}
                       disabled={busyId === email}
-                      className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
+                      className="p-2 shrink-0 text-[var(--text-secondary)] hover:text-red-500 opacity-60 hover:opacity-100 focus:opacity-100 transition-all disabled:opacity-50"
                       title="Cancel Invite"
                     >
                       {busyId === email ? (
